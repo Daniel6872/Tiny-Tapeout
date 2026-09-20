@@ -3,6 +3,12 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles, Timer
 
 
+async def clock_edge(dut):
+    # Wait for the clock edge, then let NBA updates settle before reading signals
+    await RisingEdge(dut.clk)
+    await Timer(1, units="ns")
+
+
 @cocotb.test()
 async def test_counter(dut):
     dut._log.info("Starting 8-bit counter test")
@@ -20,7 +26,7 @@ async def test_counter(dut):
     await ClockCycles(dut.clk, 5)
 
     dut.rst_n.value = 1      # Release reset
-    await RisingEdge(dut.clk)
+    await clock_edge(dut)
 
     assert dut.uo_out.value == 0, \
         f"Expected 0 after reset, got {dut.uo_out.value}"
@@ -29,10 +35,8 @@ async def test_counter(dut):
     # oe=1, en=1, load=0 -> ui_in = 0b110
     dut.ui_in.value = 0b110
 
-    await RisingEdge(dut.clk)  # Let enable take effect
-
     for expected in range(1, 6):
-        await RisingEdge(dut.clk)
+        await clock_edge(dut)
 
         assert dut.uo_out.value == expected, \
             f"Expected {expected}, got {dut.uo_out.value}"
@@ -42,7 +46,7 @@ async def test_counter(dut):
     dut.uio_in.value = 0xA5
     dut.ui_in.value = 0b111
 
-    await RisingEdge(dut.clk)  # Single edge to latch 0xA5
+    await clock_edge(dut)  # Latch 0xA5
 
     assert dut.uo_out.value == 0xA5, \
         f"Expected 0xA5 after load, got {hex(dut.uo_out.value)}"
@@ -51,25 +55,24 @@ async def test_counter(dut):
     # oe=1, en=1, load=0 -> ui_in = 0b110
     dut.ui_in.value = 0b110
 
-    await RisingEdge(dut.clk)
+    await clock_edge(dut)
 
     assert dut.uo_out.value == 0xA6, \
         f"Expected 0xA6 on next count, got {hex(dut.uo_out.value)}"
 
     # 5. Test Output Enable / Tri-State
-    # oe=0 -> output should be high impedance (Z)
-    # ui_in = 0b010
-    dut.ui_in.value = 0b010
+    # oe=0, en=0, load=0 -> ui_in = 0b000 (disable en so the counter freezes)
+    dut.ui_in.value = 0b000
 
     # Give combinational output assignment time to update
     await Timer(1, units="us")
 
-    assert str(dut.uo_out.value) == "zzzzzzzz", \
+    assert str(dut.uo_out.value).upper() == "ZZZZZZZZ", \
         f"Expected high impedance (Z) when oe=0, got {dut.uo_out.value}"
 
     # Re-enable output
-    # oe=1, en=1, load=0 -> ui_in = 0b110
-    dut.ui_in.value = 0b110
+    # oe=1, en=0, load=0 -> ui_in = 0b100
+    dut.ui_in.value = 0b100
 
     await Timer(1, units="us")
 
