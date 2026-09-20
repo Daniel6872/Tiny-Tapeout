@@ -15,11 +15,11 @@ async def test_counter(dut):
     dut.ena.value = 1
     dut.ui_in.value = 0b100  # oe=1, en=0, load=0
     dut.uio_in.value = 0
-    dut.rst_n.value = 0       # Assert active-low reset
+    dut.rst_n.value = 0      # Assert active-low reset
 
     await ClockCycles(dut.clk, 5)
 
-    dut.rst_n.value = 1       # Release reset
+    dut.rst_n.value = 1      # Release reset
     await RisingEdge(dut.clk)
 
     assert dut.uo_out.value == 0, \
@@ -39,18 +39,16 @@ async def test_counter(dut):
 
     # 4. Test Parallel Load
     # oe=1, en=1, load=1 -> ui_in = 0b111
-
     dut.uio_in.value = 0xA5
     dut.ui_in.value = 0b111
 
-    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)  # Single edge to latch 0xA5
 
     assert dut.uo_out.value == 0xA5, \
         f"Expected 0xA5 after load, got {hex(dut.uo_out.value)}"
 
     # Resume counting from 0xA5
     # oe=1, en=1, load=0 -> ui_in = 0b110
-
     dut.ui_in.value = 0b110
 
     await RisingEdge(dut.clk)
@@ -61,7 +59,6 @@ async def test_counter(dut):
     # 5. Test Output Enable / Tri-State
     # oe=0 -> output should be high impedance (Z)
     # ui_in = 0b010
-
     dut.ui_in.value = 0b010
 
     # Give combinational output assignment time to update
@@ -72,7 +69,6 @@ async def test_counter(dut):
 
     # Re-enable output
     # oe=1, en=1, load=0 -> ui_in = 0b110
-
     dut.ui_in.value = 0b110
 
     await Timer(1, units="us")
