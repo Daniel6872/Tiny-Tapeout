@@ -1,40 +1,43 @@
-# SPDX-FileCopyrightText: © 2024 Tiny Tapeout
-# SPDX-License-Identifier: Apache-2.0
-
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
 
-
 @cocotb.test()
-async def test_project(dut):
-    dut._log.info("Start")
+async def test_counter(dut):
+    dut._log.info("Starting 8-bit counter test")
 
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
+    # Start 100 kHz clock
+    clock = Clock(dut.clk, 10, units="us")
     cocotb.start_soon(clock.start())
 
-    # Reset
-    dut._log.info("Reset")
+    # Initialize inputs
     dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
-    dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 10)
-    dut.rst_n.value = 1
+    dut.ui_in.value = 0   # load=0, en=0, oe=0
+    dut.uio_in.value = 0  # data_in = 0x00
+    dut.rst_n.value = 0   # Assert active-low reset
+    
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1   # Release reset
+    await ClockCycles(dut.clk, 2)
 
-    dut._log.info("Test project behavior")
+    # Test Counting (oe=1, en=1, load=0 -> ui_in = 0b110 = 6)
+    dut.ui_in.value = 0b110
+    await ClockCycles(dut.clk, 5)
+    assert dut.uo_out.value == 5, f"Expected 5, got {dut.uo_out.value}"
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
-
-    # Wait for one clock cycle to see the output values
+    # Test Parallel Load (oe=1, en=1, load=1 -> ui_in = 0b111 = 7)
+    dut.uio_in.value = 0xA5
+    dut.ui_in.value = 0b111
     await ClockCycles(dut.clk, 1)
+    
+    # Resume counting from 0xA5
+    dut.ui_in.value = 0b110
+    await ClockCycles(dut.clk, 1)
+    assert dut.uo_out.value == 0xA6, f"Expected 0xA6, got {hex(dut.uo_out.value)}"
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+    # Test Async Reset
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 1)
+    assert dut.uo_out.value == 0, f"Expected 0 on reset, got {dut.uo_out.value}"
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    dut._log.info("All counter tests passed successfully!")

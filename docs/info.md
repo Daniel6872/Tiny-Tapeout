@@ -9,13 +9,11 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-Explain how your project works
-Hello
+This project implements an 8-bit programmable counter with asynchronous reset, synchronous load, enable, and tri-state output control
 
 ## How to test
 
-Explain how to use your project
-Demo
+None required. Uses the standard Tiny Tapeout input switch bank (`ui_in`), bidirectional input bank (`uio_in`), and output LEDs (`uo_out`)
 
 ## External hardware
 
