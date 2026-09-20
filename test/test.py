@@ -6,7 +6,7 @@ from cocotb.triggers import RisingEdge, ClockCycles, Timer
 async def clock_edge(dut):
     # Wait for the clock edge, then let NBA updates settle before reading signals
     await RisingEdge(dut.clk)
-    await Timer(1, units="ns")
+    await Timer(1, units="us")
 
 
 @cocotb.test()
