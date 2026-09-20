@@ -16,12 +16,22 @@ module tt_um_example (
     input  wire       rst_n     // reset_n - low to reset
 );
 
-  // All output pins must be assigned. If not used, assign to 0.
-  assign uo_out  = ui_in + uio_in;  // Example: ou_out is the sum of ui_in and uio_in
-  assign uio_out = 0;
-  assign uio_oe  = 0;
+  // Unused bidirectional outputs assigned to 0
+  assign uio_out = 8'b0;
+  assign uio_oe  = 8'b0;
 
-  // List all unused inputs to prevent warnings
-  wire _unused = &{ena, clk, rst_n, 1'b0};
+  // List unused inputs to suppress compiler warnings (ena is not used)
+  wire _unused = &{ena, 1'b0};
+
+  // Instantiate your 8-bit programmable counter
+  counter_8bit user_counter (
+      .clk      (clk),
+      .rst_n    (rst_n),
+      .load     (ui_in[0]),    // Input pin 0 -> Load
+      .en       (ui_in[1]),    // Input pin 1 -> Enable
+      .oe       (ui_in[2]),    // Input pin 2 -> Output Enable
+      .data_in  (uio_in),      // 8-bit input bus -> Parallel Load Data
+      .data_out (uo_out)       // 8-bit output bus -> Counter Output
+  );
 
 endmodule
