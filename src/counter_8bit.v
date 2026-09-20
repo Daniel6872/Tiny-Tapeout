@@ -3,7 +3,7 @@ module counter_8bit(
     input wire clk,
     input wire rst_n, //Async reset (active low: 0 = reset, 1 = run)
     input wire load, //Synchronous load signal
-    input wire en, //Counter load signal
+    input wire en, //Counter enable signal
     input wire oe,//Ouput enable signal
     input wire[7:0] data_in, //8 bit input
     output wire[7:0] data_out //8 bit tri-state output bus
@@ -25,6 +25,6 @@ module counter_8bit(
         end
     end
     
-    assign data_out = oe ? count: 8'bZZZZZZZZ; //If output is enabled, set it to count, if it is not set it all tohigh impedance
+    assign data_out = oe ? count: 8'bz; //If output is enabled, set it to count, if it is not set it all to high impedance
 
 endmodule
