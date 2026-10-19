@@ -16,6 +16,24 @@ To run the RTL simulation:
 make -B
 ```
 
+To test the standalone FFT butterfly with Icarus in Verilog-2005 mode:
+
+```sh
+make butterfly
+```
+
+This runs three cocotb tests against the integer reference function in
+[test_butterfly.py](test_butterfly.py): signed boundary combinations, every
+complex B input with all four twiddles and scaling settings, and 20,000 seeded
+random butterflies. The reference uses 45/64 twiddles, nearest rounding with ties
+toward positive infinity, and saturation to [-64, 63]. Results are written to
+`results_butterfly.xml`. The existing GitHub Actions test workflow runs this target
+in addition to the top-level tests, then synthesizes the standalone butterfly
+with Yosys and checks the resulting netlist.
+
+The butterfly target tests RTL only. The current top-level wrapper still contains
+the counter, so the GDS workflow does not yet synthesize or measure the butterfly.
+
 To run gatelevel simulation, first harden your project and copy `../runs/wokwi/results/final/verilog/gl/{your_module_name}.v` to `gate_level_netlist.v`.
 
 Then run:

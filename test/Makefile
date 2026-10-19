@@ -7,6 +7,7 @@ FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
 PROJECT_SOURCES = project.v counter_8bit.v
+TESTBENCH ?= tb.v
 
 ifneq ($(GATES),yes)
 
@@ -35,7 +36,7 @@ endif
 COMPILE_ARGS 		+= -I$(SRC_DIR)
 
 # Include the testbench sources:
-VERILOG_SOURCES += $(PWD)/tb.v
+VERILOG_SOURCES += $(PWD)/$(TESTBENCH)
 TOPLEVEL = tb
 
 # List test modules to run, separated by commas and without the .py suffix:
@@ -43,3 +44,10 @@ COCOTB_TEST_MODULES = test
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+.PHONY: butterfly
+butterfly:
+	$(MAKE) sim GATES=no PROJECT_SOURCES=project.v TESTBENCH=tb_butterfly.v \
+		TOPLEVEL=tb_butterfly COCOTB_TEST_MODULES=test_butterfly \
+		SIM_BUILD=sim_build/butterfly COCOTB_RESULTS_FILE=results_butterfly.xml \
+		COMPILE_ARGS="-g2005 -Wall"
