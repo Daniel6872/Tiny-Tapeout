@@ -1,9 +1,9 @@
+`default_nettype none
+
 /*
  * Copyright (c) 2026 Chris Wu and Daniel Wang
  * SPDX-License-Identifier: Apache-2.0
  */
-
-`default_nettype none
 
 module tt_um_example (
     input  wire [7:0] ui_in,    // Dedicated inputs
@@ -37,7 +37,7 @@ module tt_um_example (
     wire [13:0] Read_B;
     wire        is_valid_output_wire;
 
-    assign uio_out = {7'd0, is_valid_output_wire};
+    assign uio_out = {6'd0, is_valid_output_wire, 1'b0};
 
     // Instantiate Top Wrapper & FSM Controller[cite: 1]
     fft_top_wrapper top_wrapper_inst (
@@ -79,10 +79,10 @@ module fft_top_wrapper (
     output reg         WE_load,
     output reg         WE_math,
     output reg  [1:0]  Shift_Ctrl,
-    input  wire [13:0] D_out,
+    output wire [13:0] D_out,
     output wire [13:0] D_load,
-    input  wire [13:0] Read_A,
-    input  wire [13:0] Read_B,
+    output wire [13:0] Read_A,
+    output wire [13:0] Read_B,
     output wire [13:0] Write_A_prime,
     output wire [13:0] Write_B_prime
 );
@@ -91,10 +91,9 @@ module fft_top_wrapper (
                      S_COMPUTE   = 2'b01,
                      S_OUTPUT    = 2'b10;
 
-    reg [3:0] load_count;
+    reg [2:0] load_count;
     reg [3:0] compute_count;
-    reg [4:0] output_count;
-    reg [2:0] load_addr_reg;
+    reg [3:0] output_count;
     reg [1:0] twiddle_sel;
 
     // Load real sample from ui_in[6:0], imaginary part is 0
@@ -104,17 +103,7 @@ module fft_top_wrapper (
     function [2:0] bit_rev;
         input [2:0] idx;
         begin
-            case (idx)
-                3'd0: bit_rev = 3'd0;
-                3'd1: bit_rev = 3'd4;
-                3'd2: bit_rev = 3'd2;
-                3'd3: bit_rev = 3'd6;
-                3'd4: bit_rev = 3'd1;
-                3'd5: bit_rev = 3'd5;
-                3'd6: bit_rev = 3'd3;
-                3'd7: bit_rev = 3'd7;
-                default: bit_rev = 3'd0;
-            endcase
+            bit_rev = {idx[0], idx[1], idx[2]};
         end
     endfunction
 
@@ -123,44 +112,34 @@ module fft_top_wrapper (
         Addr_A     = 3'd0;
         Addr_B     = 3'd0;
         Shift_Ctrl = 2'd1; // Shift right by 1 per stage to prevent overflow
+        twiddle_sel = 2'd0;
+        WE_load = 1'b0;
+        WE_math = 1'b0;
 
         case (Phase_State)
             S_IDLE_LOAD: begin
-                Addr_A = load_addr_reg;
+                Addr_A = bit_rev(load_count);
+                WE_load = rst_n && uio_in[0];
             end
             S_COMPUTE: begin
+                WE_math = rst_n;
                 case (compute_count[3:2])
-                    2'd0: begin // Stage 0: W0 only
-                        Shift_Ctrl  = 2'd1;
-                        twiddle_sel = 2'b00;
-                        case (compute_count[1:0])
-                            2'd0: begin Addr_A = 3'd0; Addr_B = 3'd4; end
-                            2'd1: begin Addr_A = 3'd1; Addr_B = 3'd5; end
-                            2'd2: begin Addr_A = 3'd2; Addr_B = 3'd6; end
-                            2'd3: begin Addr_A = 3'd3; Addr_B = 3'd7; end
-                        endcase
+                    2'd0: begin // (0,1), (2,3), (4,5), (6,7): W0
+                        Addr_A = {compute_count[1:0], 1'b0};
+                        Addr_B = {compute_count[1:0], 1'b1};
                     end
-                    2'd1: begin // Stage 1: W0, W2
-                        Shift_Ctrl = 2'd1;
-                        case (compute_count[1:0])
-                            2'd0: begin Addr_A = 3'd0; Addr_B = 3'd2; twiddle_sel = 2'b00; end
-                            2'd1: begin Addr_A = 3'd1; Addr_B = 3'd3; twiddle_sel = 2'b10; end
-                            2'd2: begin Addr_A = 3'd4; Addr_B = 3'd6; twiddle_sel = 2'b00; end
-                            2'd3: begin Addr_A = 3'd5; Addr_B = 3'd7; twiddle_sel = 2'b10; end
-                        endcase
+                    2'd1: begin // (0,2), (1,3), (4,6), (5,7): W0,W2,W0,W2
+                        Addr_A = {compute_count[1], 1'b0, compute_count[0]};
+                        Addr_B = {compute_count[1], 1'b1, compute_count[0]};
+                        twiddle_sel = {compute_count[0], 1'b0};
                     end
-                    2'd2: begin // Stage 2: W0, W1, W2, W3
-                        Shift_Ctrl = 2'd1;
-                        case (compute_count[1:0])
-                            2'd0: begin Addr_A = 3'd0; Addr_B = 3'd1; twiddle_sel = 2'b00; end
-                            2'd1: begin Addr_A = 3'd2; Addr_B = 3'd3; twiddle_sel = 2'b01; end
-                            2'd2: begin Addr_A = 3'd4; Addr_B = 3'd5; twiddle_sel = 2'b10; end
-                            2'd3: begin Addr_A = 3'd6; Addr_B = 3'd7; twiddle_sel = 2'b11; end
-                        endcase
+                    2'd2: begin // (0,4), (1,5), (2,6), (3,7): W0,W1,W2,W3
+                        Addr_A = {1'b0, compute_count[1:0]};
+                        Addr_B = {1'b1, compute_count[1:0]};
+                        twiddle_sel = compute_count[1:0];
                     end
                     default: begin
-                        Addr_A = 3'd0;
-                        Addr_B = 3'd1;
+                        WE_math = 1'b0;
                     end
                 endcase
             end
@@ -190,14 +169,13 @@ module fft_top_wrapper (
         .D_out(D_out)
     );
 
-    // Instantiate Butterfly Unit[cite: 1]
-    butterfly butterfly_inst (
-        .clk(clk),
-        .rst_n(rst_n),
+    // Combinational results are captured by reg_file at the same edge that
+    // advances compute_count; no delayed results or write addresses are needed.
+    fft_butterfly butterfly_inst (
         .Read_A(Read_A),
         .Read_B(Read_B),
         .Shift_Ctrl(Shift_Ctrl),
-        .twiddle_sel(twiddle_sel),
+        .Twiddle_Index(twiddle_sel),
         .Write_A_prime(Write_A_prime),
         .Write_B_prime(Write_B_prime)
     );
@@ -206,39 +184,32 @@ module fft_top_wrapper (
     always @(posedge clk) begin
         if (!rst_n) begin
             Phase_State     <= S_IDLE_LOAD;
-            load_count      <= 4'd0;
-            load_addr_reg   <= 3'd0;
+            load_count      <= 3'd0;
             compute_count   <= 4'd0;
-            output_count    <= 5'd0;
-            WE_load         <= 1'b0;
-            WE_math         <= 1'b0;
+            output_count    <= 4'd0;
             is_valid_output <= 1'b0;
             uo_out          <= 8'd0;
         end else begin
-            WE_load         <= 1'b0;
-            WE_math         <= 1'b0;
             is_valid_output <= 1'b0;
+            uo_out          <= 8'd0;
 
             case (Phase_State)
                 S_IDLE_LOAD: begin
                     if (uio_in[0]) begin
-                        WE_load       <= 1'b1;
-                        load_addr_reg <= bit_rev(load_count[2:0]);
-                        if (load_count == 4'd7) begin
-                            load_count    <= 4'd0;
+                        if (load_count == 3'd7) begin
+                            load_count    <= 3'd0;
                             Phase_State   <= S_COMPUTE;
                             compute_count <= 4'd0;
                         end else begin
-                            load_count <= load_count + 4'd1;
+                            load_count <= load_count + 3'd1;
                         end
                     end
                 end
 
                 S_COMPUTE: begin
-                    WE_math <= 1'b1;
                     if (compute_count == 4'd11) begin
                         Phase_State  <= S_OUTPUT;
-                        output_count <= 5'd0;
+                        output_count <= 4'd0;
                     end else begin
                         compute_count <= compute_count + 4'd1;
                     end
@@ -256,11 +227,14 @@ module fft_top_wrapper (
                             Phase_State <= S_IDLE_LOAD;
                         end
                     end
-                    output_count <= output_count + 5'd1;
+                    output_count <= output_count + 4'd1;
                 end
 
                 default: begin
                     Phase_State <= S_IDLE_LOAD;
+                    load_count <= 3'd0;
+                    compute_count <= 4'd0;
+                    output_count <= 4'd0;
                 end
             endcase
         end
@@ -308,95 +282,6 @@ module reg_file (
 
 endmodule
 
-// -----------------------------------------------------------------------------
-// Butterfly Unit Module[cite: 1]
-// -----------------------------------------------------------------------------
-module butterfly (
-    input  wire        clk,
-    input  wire        rst_n,
-    input  wire [13:0] Read_A,
-    input  wire [13:0] Read_B,
-    input  wire [1:0]  Shift_Ctrl,
-    input  wire [1:0]  twiddle_sel,
-    output reg  [13:0] Write_A_prime,
-    output reg  [13:0] Write_B_prime
-);
-
-    wire signed [6:0] a_re = Read_A[13:7];
-    wire signed [6:0] a_im = Read_A[6:0];
-    wire signed [6:0] b_re = Read_B[13:7];
-    wire signed [6:0] b_im = Read_B[6:0];
-
-    reg  signed [7:0] w_re_mult;
-    reg  signed [7:0] w_im_mult;
-
-    // 0.7071 approximation via shift-and-add: 45 / 64 (~0.703125)
-    function signed [7:0] scale_0707;
-        input signed [7:0] val;
-        begin
-            scale_0707 = (val * 8'sd45) >>> 6;
-        end
-    endfunction
-
-    always @(*) begin
-        case (twiddle_sel)
-            2'b00: begin // W0 = 1
-                w_re_mult = {b_re[6], b_re};
-                w_im_mult = {b_im[6], b_im};
-            end
-            2'b01: begin // W1 = 0.7071 - j0.7071
-                w_re_mult = scale_0707({b_re[6], b_re} + {b_im[6], b_im});
-                w_im_mult = scale_0707({b_im[6], b_im} - {b_re[6], b_re});
-            end
-            2'b10: begin // W2 = -j (swaps and negations only)
-                w_re_mult = {b_im[6], b_im};
-                w_im_mult = -{b_re[6], b_re};
-            end
-            2'b11: begin // W3 = -0.7071 - j0.7071
-                w_re_mult = scale_0707({b_im[6], b_im} - {b_re[6], b_re});
-                w_im_mult = -scale_0707({b_re[6], b_re} + {b_im[6], b_im});
-            end
-            default: begin
-                w_re_mult = {b_re[6], b_re};
-                w_im_mult = {b_im[6], b_im};
-            end
-        endcase
-    end
-
-    wire signed [8:0] sum_re  = {a_re[6], a_re} + {w_re_mult[7], w_re_mult};
-    wire signed [8:0] sum_im  = {a_im[6], a_im} + {w_im_mult[7], w_im_mult};
-    wire signed [8:0] diff_re = {a_re[6], a_re} - {w_re_mult[7], w_re_mult};
-    wire signed [8:0] diff_im = {a_im[6], a_im} - {w_im_mult[7], w_im_mult};
-
-    wire signed [8:0] scaled_sum_re  = sum_re >>> Shift_Ctrl;
-    wire signed [8:0] scaled_sum_im  = sum_im >>> Shift_Ctrl;
-    wire signed [8:0] scaled_diff_re = diff_re >>> Shift_Ctrl;
-    wire signed [8:0] scaled_diff_im = diff_im >>> Shift_Ctrl;
-
-    function [6:0] saturate;
-        input signed [8:0] val;
-        begin
-            if (val > 9'sd63)
-                saturate = 7'sd63;
-            else if (val < -9'sd64)
-                saturate = -7'sd64;
-            else
-                saturate = val[6:0];
-        end
-    endfunction
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            Write_A_prime <= 14'sd0;
-            Write_B_prime <= 14'sd0;
-        end else begin
-            Write_A_prime <= {saturate(scaled_sum_re), saturate(scaled_sum_im)};
-            Write_B_prime <= {saturate(scaled_diff_re), saturate(scaled_diff_im)};
-        end
-    end
-
-endmodule
-
 module fft_butterfly (
     input  wire [13:0] Read_A,
     input  wire [13:0] Read_B,
@@ -410,18 +295,20 @@ module fft_butterfly (
     reg signed [8:0] twiddle_real, twiddle_imag;
     reg signed [8:0] factor_real, factor_imag;
 
-    // 45/64 approximates 1/sqrt(2). Round to nearest, ties toward +infinity.
-    // W1/W3 pre-adds can reach +128, so keep nine signed bits.
+    // 1/sqrt(2) ~= 0.10110101 binary = 181/256 (eight fractional bits).
+    // Round to nearest, ties toward +infinity. Pre-adds are in [-128, 128],
+    // so the product magnitude is at most 23168 and fits in 16 signed bits.
     function signed [8:0] times_sqrt_half;
         input signed [8:0] value;
-        reg signed [13:0] extended_value;
-        reg signed [13:0] product;
-        reg signed [13:0] rounded_product;
+        reg signed [15:0] extended_value;
+        reg signed [15:0] product;
+        reg signed [15:0] rounded_product;
         begin
-            extended_value = {{5{value[8]}}, value};
-            product = (extended_value <<< 5) + (extended_value <<< 3)
+            extended_value = {{7{value[8]}}, value};
+            product = (extended_value <<< 7) + (extended_value <<< 5)
+                    + (extended_value <<< 4)
                     + (extended_value <<< 2) + extended_value;
-            rounded_product = (product + 14'sd32) >>> 6;
+            rounded_product = (product + 16'sd128) >>> 8;
             times_sqrt_half = rounded_product[8:0];
         end
     endfunction

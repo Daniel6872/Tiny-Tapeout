@@ -25,14 +25,17 @@ make butterfly
 This runs three cocotb tests against the integer reference function in
 [test_butterfly.py](test_butterfly.py): signed boundary combinations, every
 complex B input with all four twiddles and scaling settings, and 20,000 seeded
-random butterflies. The reference uses 45/64 twiddles, nearest rounding with ties
+random butterflies. The reference uses 181/256 twiddles (eight fractional bits), nearest rounding with ties
 toward positive infinity, and saturation to [-64, 63]. Results are written to
 `results_butterfly.xml`. The existing GitHub Actions test workflow runs this target
 in addition to the top-level tests, then synthesizes the standalone butterfly
 with Yosys and checks the resulting netlist.
 
-The butterfly target tests RTL only. The current top-level wrapper still contains
-the counter, so the GDS workflow does not yet synthesize or measure the butterfly.
+The butterfly target tests RTL only. The top-level target runs full FFT frames,
+including input gaps, back-to-back frames, ignored busy inputs, output timing,
+and reset at every load/compute/output position. The GDS workflow now synthesizes
+the integrated FFT; tile fit and physical timing still require a successful
+hardening run.
 
 To run gatelevel simulation, first harden your project and copy `../runs/wokwi/results/final/verilog/gl/{your_module_name}.v` to `gate_level_netlist.v`.
 

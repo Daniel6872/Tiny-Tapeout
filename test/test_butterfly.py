@@ -6,12 +6,12 @@ from cocotb.triggers import Timer
 
 
 def butterfly_reference(a, b, twiddle, shift):
-    """Model 45/64 twiddles and two nearest-rounding steps, ties toward +inf."""
+    """Model 181/256 twiddles and two nearest-rounding steps, ties toward +inf."""
     ar, ai = a
     br, bi = b
 
     def coefficient(value):
-        return (45 * value + 32) // 64
+        return (181 * value + 128) // 256
 
     if twiddle == 0:
         tr, ti = br, bi
@@ -58,9 +58,9 @@ async def check_case(dut, a, b, twiddle, shift):
 async def test_boundaries(dut):
     # Hand-calculated anchors catch sign, rounding, and saturation model errors.
     anchors = [
-        ((0, 0), (32, 0), 1, 1, ((12, -11), (-11, 11))),
+        ((0, 0), (32, 0), 1, 1, ((12, -11), (-11, 12))),
         ((0, 0), (-64, -64), 2, 0, ((-64, 63), (63, -64))),
-        ((0, 0), (-64, -64), 3, 1, ((0, 45), (0, -45))),
+        ((0, 0), (-64, -64), 3, 1, ((0, 46), (0, -45))),
         ((63, -64), (63, -64), 0, 0, ((63, -64), (0, 0))),
     ]
     for a, b, twiddle, shift, expected in anchors:
