@@ -1,37 +1,40 @@
-/*
- * Copyright (c) 2024 Your Name
- * SPDX-License-Identifier: Apache-2.0
- */
-
 `default_nettype none
 
-module tt_um_example (
-    input  wire [7:0] ui_in,    // Dedicated inputs
-    output wire [7:0] uo_out,   // Dedicated outputs
-    input  wire [7:0] uio_in,   // IOs: Input path
-    output wire [7:0] uio_out,  // IOs: Output path
-    output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
-    input  wire       ena,      // always 1 when the design is powered, so you can ignore it
-    input  wire       clk,      // clock
-    input  wire       rst_n     // reset_n - low to reset
+module reg_file (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        WE_load,
+    input  wire        WE_math,
+    input  wire [2:0]  Addr_A,
+    input  wire [2:0]  Addr_B,
+    input  wire [13:0] D_load,
+    input  wire [13:0] Write_A_prime,
+    input  wire [13:0] Write_B_prime,
+    output wire [13:0] Read_A,
+    output wire [13:0] Read_B,
+    output wire [13:0] D_out
 );
 
-  // Unused bidirectional outputs assigned to 0
-  assign uio_out = 8'b0;
-  assign uio_oe  = 8'b0;
+    reg [13:0] mem [7:0];
+    integer i;
 
-  // List unused inputs to suppress compiler warnings (ena is not used)
-  wire _unused = &{ena, 1'b0};
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            for (i = 0; i < 8; i = i + 1) begin
+                mem[i] <= 14'd0;
+            end
+        end else if (WE_load) begin
+            mem[Addr_A] <= D_load;
+        end else if (WE_math) begin
+            mem[Addr_A] <= Write_A_prime;
+            mem[Addr_B] <= Write_B_prime;
+        end
+    end
 
-  // Instantiate your 8-bit programmable counter
-  counter_8bit user_counter (
-      .clk      (clk),
-      .rst_n    (rst_n),
-      .load     (ui_in[0]),    // Input pin 0 -> Load
-      .en       (ui_in[1]),    // Input pin 1 -> Enable
-      .oe       (ui_in[2]),    // Input pin 2 -> Output Enable
-      .data_in  (uio_in),      // 8-bit input bus -> Parallel Load Data
-      .data_out (uo_out)       // 8-bit output bus -> Counter Output
-  );
+    assign Read_A = mem[Addr_A];
+    assign Read_B = mem[Addr_B];
+    assign D_out  = mem[Addr_A];
 
 endmodule
+
+`default_nettype wire
