@@ -190,4 +190,55 @@ module fft_datapath (
     );
 
 endmodule
+
+// Tiny Tapeout I/O side of the FFT datapath. The FSM owns the register-file
+// addresses and write enables; it must hold each output-bin address for two
+// cycles during unload (real first, then imaginary).
+module fft_io_wrapper (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire [7:0]  ui_in,
+    input  wire [1:0]  Phase_State,
+    input  wire [13:0] D_out,
+    output wire [13:0] D_load,
+    output reg  [7:0]  uo_out,
+    output wire [7:0]  uio_out,
+    output wire [7:0]  uio_oe
+);
+    localparam [1:0] PHASE_LOAD    = 2'd0;
+    localparam [1:0] PHASE_COMPUTE = 2'd1;
+    localparam [1:0] PHASE_UNLOAD  = 2'd2;
+
+    reg [3:0] stream_cycle;
+    wire is_valid_input;
+    wire is_valid_output;
+
+    assign D_load = {ui_in[7:1], 7'd0};
+    assign is_valid_input = (Phase_State == PHASE_LOAD);
+    assign is_valid_output = (Phase_State == PHASE_UNLOAD);
+
+    // Expose phase-valid indicators on uio[0] and uio[1].
+    assign uio_out = {6'b0, is_valid_output, is_valid_input};
+    assign uio_oe = 8'b00000011;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            stream_cycle <= 4'd0;
+        else if (Phase_State != PHASE_UNLOAD)
+            stream_cycle <= 4'd0;
+        else if (stream_cycle != 4'd15)
+            stream_cycle <= stream_cycle + 1'b1;
+    end
+
+    always @(*) begin
+        uo_out = 8'd0;
+        if (Phase_State == PHASE_UNLOAD) begin
+            if (stream_cycle[0])
+                uo_out = {1'b1, D_out[6:0]};
+            else
+                uo_out = {1'b0, D_out[13:7]};
+        end
+    end
+
+endmodule
 `default_nettype wire
