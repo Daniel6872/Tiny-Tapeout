@@ -213,7 +213,7 @@ module fft_io_wrapper (
     wire is_valid_input;
     wire is_valid_output;
 
-    assign D_load = {ui_in[7:1], 7'd0};
+    assign D_load = {ui_in[6:0], 7'd0};
     assign is_valid_input = (Phase_State == PHASE_LOAD);
     assign is_valid_output = (Phase_State == PHASE_UNLOAD);
 
@@ -371,7 +371,7 @@ module fft_controller (
 endmodule
 
 // Tiny Tapeout top level: FSM controller, datapath, and fft_io_wrapper pins.
-//   ui_in[7:1]  signed 7-bit real sample; ui_in[0] is ignored
+//   ui_in[6:0]  signed 7-bit real sample; ui_in[7] is ignored
 //   uio_out[0]  high throughout LOAD: ui_in is sampled at every rising edge
 //   uio_out[1]  high throughout OUTPUT: uo_out = {0, real} then {1, imag}
 //   uo_out      16 bytes, X[0]..X[7] in natural order; 0 outside OUTPUT

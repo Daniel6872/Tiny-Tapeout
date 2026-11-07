@@ -1,8 +1,8 @@
 """Pin-level cocotb tests for the 8-point fixed-point FFT (tt_um_example).
 
 Pin protocol (fft_io_wrapper):
-  * uio_out[0] is high during LOAD. A sample is taken from ui_in[7:1] at every
-    rising edge in LOAD; ui_in[0] and all uio_in pins are ignored.
+  * uio_out[0] is high during LOAD. A sample is taken from ui_in[6:0] at every
+    rising edge in LOAD; ui_in[7] and all uio_in pins are ignored.
   * After 8 samples there are 12 compute cycles, then 16 OUTPUT cycles with
     uio_out[1] high. uo_out is {0, real[6:0]} then {1, imag[6:0]} for X[0]..X[7],
     and 0 at all other times. uio_oe is 0x03.
@@ -181,21 +181,22 @@ class Harness:
         assert uio_out & 0xFC == 0, f"uio_out[7:2] must be 0: {uio_out:#04x}"
         return uo_out, uio_out
 
-    async def tick(self, sample=None, rst_n=True):
+    async def tick(self, sample=None, rst_n=True, randomize_ignored_pins=True):
         """Drive one rising edge; check FSM controls before it and pins after it."""
         rng = self.rng
         if sample is None:
-            sample = rng.randrange(-64, 64)
-        # Ignored pins get random values: ui_in[0] and all of uio_in.
-        self.dut.ui_in.value = ((sample & 0x7F) << 1) | rng.getrandbits(1)
-        self.dut.uio_in.value = rng.getrandbits(8)
+            sample = rng.randrange(-64, 64) if randomize_ignored_pins else 0
+        ignored_bit = rng.getrandbits(1) if randomize_ignored_pins else 0
+        ignored_uio = rng.getrandbits(8) if randomize_ignored_pins else 0
+        self.dut.ui_in.value = (ignored_bit << 7) | (sample & 0x7F)
+        self.dut.uio_in.value = ignored_uio
         self.dut.rst_n.value = int(rst_n)
         if rst_n and not GATE_LEVEL:
             await Timer(1, unit="ns")  # Let combinational FSM outputs settle
             check_controls(self.dut, self.model, self.edge)
         await RisingEdge(self.dut.clk)
         await FallingEdge(self.dut.clk)
-        expected = self.model.edge(rst_n, decode_byte(sample))
+        expected = self.model.edge(rst_n, decode_byte(sample & 0x7F))
         actual = self.read_pins()
         assert actual == expected, (
             f"edge {self.edge}: got (uo_out={actual[0]:#04x}, uio_out={actual[1]:#04b}), "
@@ -210,11 +211,11 @@ class Harness:
             assert await self.tick(rst_n=False) == (0, UIO_LOAD)
         check_reset_state(self.dut)
 
-    async def run_frame(self, samples):
+    async def run_frame(self, samples, randomize_ignored_pins=True):
         """Send one frame, run it to completion, and check bytes and timing."""
         assert self.model.phase == "LOAD" and not self.model.samples
         for index, x in enumerate(samples):
-            pins = await self.tick(x)
+            pins = await self.tick(x, randomize_ignored_pins=randomize_ignored_pins)
             assert pins == ((0, UIO_LOAD) if index < 7 else (0, 0))
         last_sample_edge = self.edge - 1
 
@@ -222,7 +223,7 @@ class Harness:
         received = []
         valid_edges = []
         for _ in range(COMPUTE_CYCLES + OUTPUT_BYTES):
-            byte, uio = await self.tick()
+            byte, uio = await self.tick(randomize_ignored_pins=randomize_ignored_pins)
             if uio & UIO_OUTPUT:
                 received.append(byte)
                 valid_edges.append(self.edge - 1)
@@ -300,6 +301,27 @@ async def test_reference_matches_ideal_fft(dut):
             error = max(abs(got[0] - ideal.real), abs(got[1] - ideal.imag))
             assert error <= 2.0, f"X[{k}] of {samples}: {got} vs {ideal:.3f}"
     dut._log.info("Fixed-point model is within 2 LSB of DFT/8 for %d vectors", len(vectors))
+
+
+@cocotb.test()
+async def test_manual_single_frame(dut):
+    """Run one varied signed-input frame and verify real and imaginary bins."""
+    harness = Harness(dut, 0x298A)
+    await harness.start()
+    await harness.reset()
+
+    samples = [-28, 40, -14, 43, 59, 15, 24, -8]
+    expected_bins = [
+        (17, 0), (-12, -2), (3, -2), (-8, -11),
+        (-6, 0), (-8, 12), (3, 3), (-12, 3),
+    ]
+    assert fft_reference(samples) == expected_bins
+    expected = expected_bytes(samples)
+    dut._log.info("Input samples: %s", samples)
+    dut._log.info("ui_in bus bytes (ignored bit 7 held low): %s",
+                  [f"0x{sample & 0x7F:02X}" for sample in samples])
+    dut._log.info("Expected (real, imag) bins: %s", expected_bins)
+    assert await harness.run_frame(samples, randomize_ignored_pins=False) == expected
 
 
 @cocotb.test()
