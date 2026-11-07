@@ -53,13 +53,13 @@ def _sqrt_half(value):
     return (181 * value + 128) >> 8
 
 
-def _halve(value):
-    # Stage scaling: divide by two with ties toward +infinity, then saturate.
-    return max(-64, min(63, (value + 1) >> 1))
+def scale_and_saturate(value, shift):
+    # Round to nearest with ties toward +infinity, then saturate to signed 7-bit.
+    return max(-64, min(63, (value + (1 << (shift - 1) if shift else 0)) >> shift))
 
 
-def butterfly(a, b, twiddle):
-    """A' = (A + W*B)/2 and B' = (A - W*B)/2 for W = exp(-j*2*pi*twiddle/8)."""
+def butterfly(a, b, twiddle, shift=1):
+    """Apply one rounded, saturated butterfly for W = exp(-j*2*pi*twiddle/8)."""
     ar, ai = a
     br, bi = b
     if twiddle == 0:
@@ -72,7 +72,10 @@ def butterfly(a, b, twiddle):
         tr, ti = _sqrt_half(bi - br), _sqrt_half(-br - bi)
     else:
         raise ValueError("twiddle must be 0..3")
-    return (_halve(ar + tr), _halve(ai + ti)), (_halve(ar - tr), _halve(ai - ti))
+    return (
+        (scale_and_saturate(ar + tr, shift), scale_and_saturate(ai + ti, shift)),
+        (scale_and_saturate(ar - tr, shift), scale_and_saturate(ai - ti, shift)),
+    )
 
 
 def fft_reference(samples):
@@ -371,3 +374,284 @@ async def test_reset_at_every_frame_position(dut):
             await harness.tick()
         await harness.reset(cycles=1 + offset % 3)
         await harness.run_frame([rng.randrange(-64, 64) for _ in range(8)])
+
+
+async def unit_defaults(dut):
+    """Initialize the independent RTL-module instances in tb.v."""
+    dut.clk.value = 0
+    dut.rst_n.value = 0
+    dut.ena.value = 0
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+
+    for name in (
+        "unit_rf_rst_n", "unit_rf_we_load", "unit_rf_we_math",
+        "unit_dp_rst_n", "unit_dp_we_load", "unit_dp_we_math",
+        "unit_io_rst_n", "unit_ctrl_rst_n", "unit_ctrl_is_valid_input",
+    ):
+        getattr(dut, name).value = 0
+    for name in (
+        "unit_rf_addr_a", "unit_rf_addr_b", "unit_rf_d_load",
+        "unit_rf_write_a", "unit_rf_write_b", "unit_bf_read_a",
+        "unit_bf_read_b", "unit_bf_twiddle", "unit_bf_shift",
+        "unit_dp_addr_a", "unit_dp_addr_b", "unit_dp_d_load",
+        "unit_dp_twiddle", "unit_dp_shift", "unit_io_ui_in",
+        "unit_io_phase", "unit_io_d_out",
+    ):
+        getattr(dut, name).value = 0
+    await Timer(1, unit="ns")
+
+
+async def unit_edge(dut):
+    """Generate one controlled clock edge for the standalone unit instances."""
+    dut.clk.value = 0
+    await Timer(5, unit="ns")
+    dut.clk.value = 1
+    await Timer(5, unit="ns")
+    dut.clk.value = 0
+    await Timer(1, unit="ns")
+
+
+def complex_word(real, imag):
+    return ((real & 0x7F) << 7) | (imag & 0x7F)
+
+
+@cocotb.test()
+async def test_reg_file_module(dut):
+    """Check reset, read addressing, load priority, dual math writes and hold."""
+    if GATE_LEVEL:
+        return
+    await unit_defaults(dut)
+    rf = dut.unit_reg_file
+    rf.rst_n.value = 0
+    await unit_edge(dut)
+    rf.rst_n.value = 1
+
+    for address in range(8):
+        rf.addr_a.value = address
+        await Timer(1, unit="ns")
+        assert int(rf.read_a.value) == 0, f"reset did not clear word {address}"
+
+    for address in range(8):
+        rf.addr_a.value = address
+        rf.we_load.value = 1
+        rf.d_load.value = (address * 137 + 19) & 0x3FFF
+        await unit_edge(dut)
+        assert int(rf.read_a.value) == (address * 137 + 19) & 0x3FFF
+        assert int(rf.d_out.value) == int(rf.read_a.value)
+    rf.we_load.value = 0
+
+    rf.addr_a.value = 2
+    rf.addr_b.value = 3
+    await Timer(1, unit="ns")
+    rf.d_load.value = 0x1234
+    rf.write_a_prime.value = 0x0111
+    rf.write_b_prime.value = 0x0222
+    rf.we_load.value = 1
+    rf.we_math.value = 1
+    await unit_edge(dut)
+    rf.we_load.value = 0
+    rf.we_math.value = 0
+    assert int(rf.read_a.value) == 0x1234, "load must take priority over math"
+    rf.addr_a.value = 3
+    await Timer(1, unit="ns")
+    assert int(rf.read_a.value) == 3 * 137 + 19, "priority must suppress both math writes"
+
+    rf.addr_a.value = 2
+    rf.we_math.value = 1
+    await unit_edge(dut)
+    rf.we_math.value = 0
+    assert int(rf.read_a.value) == 0x0111
+    rf.addr_a.value = 3
+    await Timer(1, unit="ns")
+    assert int(rf.read_a.value) == 0x0222
+
+    rf.we_load.value = 0
+    rf.we_math.value = 0
+    rf.addr_a.value = 2
+    await unit_edge(dut)
+    assert int(rf.read_a.value) == 0x0111, "registers must hold when both enables are low"
+
+
+@cocotb.test()
+async def test_butterfly_module(dut):
+    """Exhaustively vary twiddles and shifts over boundary and random operands."""
+    if GATE_LEVEL:
+        return
+    await unit_defaults(dut)
+    bf = dut.unit_fft_butterfly
+    rng = random.Random(0xB0773)
+    operands = [
+        ((-64, -64), (-64, -64)),
+        ((63, 63), (63, 63)),
+        ((-64, 63), (-64, 63)),
+        ((63, -64), (63, -64)),
+    ]
+    operands.extend(
+        (
+            (tuple(rng.randrange(-64, 64) for _ in range(2)),
+             tuple(rng.randrange(-64, 64) for _ in range(2)))
+        )
+        for _ in range(256)
+    )
+    for a, b in operands:
+        for twiddle in range(4):
+            for shift in range(4):
+                bf.read_a.value = complex_word(*a)
+                bf.read_b.value = complex_word(*b)
+                bf.twiddle_index.value = twiddle
+                bf.shift_ctrl.value = shift
+                await Timer(1, unit="ns")
+                expected_a, expected_b = butterfly(a, b, twiddle, shift)
+                assert int(bf.write_a_prime.value) == complex_word(*expected_a), (
+                    f"A' mismatch for A={a}, B={b}, twiddle={twiddle}, shift={shift}"
+                )
+                assert int(bf.write_b_prime.value) == complex_word(*expected_b), (
+                    f"B' mismatch for A={a}, B={b}, twiddle={twiddle}, shift={shift}"
+                )
+
+
+@cocotb.test()
+async def test_datapath_module(dut):
+    """Check register-file loading and butterfly writeback through the datapath."""
+    if GATE_LEVEL:
+        return
+    await unit_defaults(dut)
+    dp = dut.unit_fft_datapath
+    dp.rst_n.value = 0
+    await unit_edge(dut)
+    dp.rst_n.value = 1
+
+    a = (37, -22)
+    b = (-41, 58)
+    dp.we_load.value = 1
+    dp.addr_a.value = 0
+    dp.d_load.value = complex_word(*a)
+    await unit_edge(dut)
+    dp.addr_a.value = 1
+    dp.d_load.value = complex_word(*b)
+    await unit_edge(dut)
+    dp.we_load.value = 0
+
+    dp.addr_a.value = 0
+    dp.addr_b.value = 1
+    dp.twiddle_index.value = 3
+    dp.shift_ctrl.value = 1
+    await Timer(1, unit="ns")
+    expected_a, expected_b = butterfly(a, b, 3)
+    dp.we_math.value = 1
+    await unit_edge(dut)
+    dp.we_math.value = 0
+    assert int(dp.d_out.value) == complex_word(*expected_a)
+    dp.addr_a.value = 1
+    await Timer(1, unit="ns")
+    assert int(dp.d_out.value) == complex_word(*expected_b)
+
+
+@cocotb.test()
+async def test_io_wrapper_module(dut):
+    """Check pin mapping, phase-valid outputs, byte order, and stream counter reset."""
+    if GATE_LEVEL:
+        return
+    await unit_defaults(dut)
+    io = dut.unit_fft_io_wrapper
+    io.rst_n.value = 0
+    io.Phase_State.value = 2
+    io.ui_in.value = 0xD5
+    io.D_out.value = complex_word(-37, 46)
+    await Timer(1, unit="ns")
+    assert int(io.uio_out.value) == 0b10
+    assert int(io.uio_oe.value) == 0x03
+    assert int(io.uo_out.value) == 0x5B, "reset stream counter selects real output"
+    assert int(io.D_load.value) == ((0xD5 >> 1) << 7)
+    await unit_edge(dut)
+    io.rst_n.value = 1
+
+    io.Phase_State.value = 0
+    await Timer(1, unit="ns")
+    assert int(io.uio_out.value) == 0b01
+    assert int(io.uo_out.value) == 0
+    io.Phase_State.value = 1
+    await Timer(1, unit="ns")
+    assert int(io.uio_out.value) == 0
+    assert int(io.uo_out.value) == 0
+
+    io.Phase_State.value = 2
+    for index in range(16):
+        await Timer(1, unit="ns")
+        expected = (0x80 | (46 & 0x7F)) if index & 1 else (-37 & 0x7F)
+        assert int(io.uo_out.value) == expected, f"output byte {index}"
+        assert int(io.uio_out.value) == 0b10
+        await unit_edge(dut)
+    assert int(io.uo_out.value) == (0x80 | (46 & 0x7F)), "counter must hold at byte 15"
+
+    io.rst_n.value = 0
+    await Timer(1, unit="ns")
+    assert int(io.uo_out.value) == ((-37) & 0x7F), "asynchronous reset restarts at real"
+
+
+def assert_controller_outputs(controller, expected, message):
+    actual = {
+        "phase": int(controller.phase_state.value),
+        "we_load": int(controller.we_load.value),
+        "we_math": int(controller.we_math.value),
+        "addr_a": int(controller.addr_a.value),
+        "addr_b": int(controller.addr_b.value),
+        "twiddle": int(controller.twiddle_index.value),
+        "shift": int(controller.shift_ctrl.value),
+        "valid_output": int(controller.is_valid_output.value),
+        "imag": int(controller.output_imag.value),
+    }
+    assert actual == expected, f"{message}: got {actual}, expected {expected}"
+
+
+@cocotb.test()
+async def test_controller_module(dut):
+    """Check load stalls, every butterfly address/twiddle, and output sequencing."""
+    if GATE_LEVEL:
+        return
+    await unit_defaults(dut)
+    ctrl = dut.unit_fft_controller
+    ctrl.rst_n.value = 0
+    await unit_edge(dut)
+    ctrl.rst_n.value = 1
+    ctrl.is_valid_input.value = 0
+    await Timer(1, unit="ns")
+    assert_controller_outputs(
+        ctrl, {"phase": 0, "we_load": 0, "we_math": 0, "addr_a": 0,
+               "addr_b": 0, "twiddle": 0, "shift": 1, "valid_output": 0, "imag": 0},
+        "load stall",
+    )
+    await unit_edge(dut)
+
+    ctrl.is_valid_input.value = 1
+    for address in LOAD_ORDER:
+        await Timer(1, unit="ns")
+        assert int(ctrl.phase_state.value) == 0
+        assert int(ctrl.we_load.value) == 1
+        assert int(ctrl.we_math.value) == 0
+        assert int(ctrl.addr_a.value) == address
+        await unit_edge(dut)
+
+    for index, (addr_a, addr_b, twiddle) in enumerate(COMPUTE_SCHEDULE):
+        await Timer(1, unit="ns")
+        assert_controller_outputs(
+            ctrl, {"phase": 1, "we_load": 0, "we_math": 1, "addr_a": addr_a,
+                   "addr_b": addr_b, "twiddle": twiddle, "shift": 1,
+                   "valid_output": 0, "imag": index & 1},
+            f"compute step {index}",
+        )
+        await unit_edge(dut)
+
+    ctrl.is_valid_input.value = 0
+    for index in range(OUTPUT_BYTES):
+        await Timer(1, unit="ns")
+        assert_controller_outputs(
+            ctrl, {"phase": 2, "we_load": 0, "we_math": 0, "addr_a": index // 2,
+                   "addr_b": 0, "twiddle": 0, "shift": 1,
+                   "valid_output": 1, "imag": index & 1},
+            f"output step {index}",
+        )
+        await unit_edge(dut)
+    await Timer(1, unit="ns")
+    assert int(ctrl.phase_state.value) == 0, "controller must return to LOAD"
