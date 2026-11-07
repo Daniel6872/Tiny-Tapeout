@@ -15,7 +15,7 @@ An 8-point radix-2 DIT FFT on signed 7-bit real samples, computed with a single 
 
 Run the cocotb testbench in `test/` (`make -B`). On the chip:
 
-1. While `uio[0]` (load_valid) is high, a sample is taken from `ui[7:1]` on every rising clock edge (`ui[0]` is ignored). Present x[0]..x[7] on eight consecutive edges.
+1. While `uio[0]` (load_valid) is high, a signed 7-bit sample is taken from `ui[6:0]` on every rising clock edge (`ui[7]` is ignored). Present x[0]..x[7] on eight consecutive edges.
 2. Wait 12 compute cycles (`uio[1:0]` both low; `uo` is 0).
 3. While `uio[1]` (output_valid) is high, `uo` streams 16 bytes: for each bin X[0]..X[7], first `{0, real[6:0]}` then `{1, imag[6:0]}` (signed 7-bit values).
 
