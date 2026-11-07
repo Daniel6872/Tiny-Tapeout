@@ -16,6 +16,11 @@ To run the RTL simulation:
 make -B
 ```
 
+The RTL suite tests the top-level streaming FFT and the `reg_file`,
+`fft_butterfly`, `fft_datapath`, `fft_io_wrapper`, and `fft_controller` modules
+independently. The standalone module tests are RTL-only; gate-level runs retain
+the end-to-end pin-level tests.
+
 To run gatelevel simulation, first harden your project and copy `../runs/wokwi/results/final/verilog/gl/{your_module_name}.v` to `gate_level_netlist.v`.
 
 Then run:
