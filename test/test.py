@@ -585,7 +585,7 @@ async def test_io_wrapper_module(dut):
     assert int(io.uio_out.value) == 0b10
     assert int(io.uio_oe.value) == 0x03
     assert int(io.uo_out.value) == 0x5B, "reset stream counter selects real output"
-    assert int(io.D_load.value) == ((0xD5 >> 1) << 7)
+    assert int(io.D_load.value) == ((0xD5 & 0x7F) << 7)
     await unit_edge(dut)
     io.rst_n.value = 1
 
