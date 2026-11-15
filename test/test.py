@@ -1,4 +1,4 @@
-"""Pin-level cocotb tests for the 8-point fixed-point FFT (tt_um_example).
+"""Pin-level cocotb tests for the 8-point fixed-point FFT (tt_um_daniel6872_fft).
 
 Pin protocol (fft_io_wrapper):
   * uio_out[0] is high during LOAD. A sample is taken from ui_in[6:0] at every

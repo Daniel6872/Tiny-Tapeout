@@ -377,7 +377,7 @@ endmodule
 //   uo_out      16 bytes, X[0]..X[7] in natural order; 0 outside OUTPUT
 //   uio_in      ignored
 // Frames repeat every 36 cycles: 8 load, 12 compute, and 16 output.
-module tt_um_example (
+module tt_um_daniel6872_fft (
     input  wire [7:0] ui_in,    // Dedicated inputs
     output wire [7:0] uo_out,   // Dedicated outputs
     input  wire [7:0] uio_in,   // IOs: Input path
