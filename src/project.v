@@ -43,7 +43,8 @@ module fft_butterfly (
     input  wire [1:0]  twiddle_index,
     input  wire [1:0]  shift_ctrl,
     output reg  [13:0] write_a_prime,
-    output reg  [13:0] write_b_prime
+    output reg  [13:0] write_b_prime,
+    output reg         overflow
 );
     reg signed [8:0] a_real, a_imag;
     reg signed [7:0] b_real, b_imag;
@@ -61,7 +62,9 @@ module fft_butterfly (
         reg signed [13:0] times_45;
         reg signed [15:0] extended_value;
         reg signed [15:0] product;
+        /* verilator lint_off UNUSEDSIGNAL */
         reg signed [15:0] rounded_product;
+        /* verilator lint_on UNUSEDSIGNAL */
         begin
             extended_value = {{8{value[7]}}, value};
             // 181*x = 4*(16*(3*x) - 3*x) + x: three add/subtract operations.
@@ -77,7 +80,7 @@ module fft_butterfly (
     // shift_ctrl selects division by 1, 2, 4, or 8. Use 1 for every FFT stage.
     // Round to nearest (ties toward +infinity), then saturate instead of wrapping.
     // Saturation also protects arbitrary complex inputs at the negative endpoint.
-    function [6:0] scale_and_saturate;
+    function [7:0] scale_with_overflow;
         input signed [8:0] value;
         input [1:0] shift;
         reg signed [8:0] scaled;
@@ -90,13 +93,16 @@ module fft_butterfly (
                 2'd3: scaled = (value + 9'sd4) >>> 3;
             endcase
             if (scaled > 9'sd63)
-                scale_and_saturate = 7'b0111111;
+                scale_with_overflow = {1'b1, 7'b0111111};
             else if (scaled < -9'sd64)
-                scale_and_saturate = 7'b1000000;
+                scale_with_overflow = {1'b1, 7'b1000000};
             else
-                scale_and_saturate = scaled[6:0];
+                scale_with_overflow = {1'b0, scaled[6:0]};
         end
     endfunction
+
+    reg [7:0] scaled_a_real, scaled_a_imag;
+    reg [7:0] scaled_b_real, scaled_b_imag;
 
     always @(*) begin
         a_real = {{2{read_a[13]}}, read_a[13:7]};
@@ -111,6 +117,11 @@ module fft_butterfly (
         twiddle_imag = b_imag;
         write_a_prime = 14'd0;
         write_b_prime = 14'd0;
+        scaled_a_real = 8'd0;
+        scaled_a_imag = 8'd0;
+        scaled_b_real = 8'd0;
+        scaled_b_imag = 8'd0;
+        overflow = 1'b0;
 
         // Stage 0: W0; stage 1: W0/W2; stage 2: W0/W1/W2/W3.
         case (twiddle_index)
@@ -134,14 +145,14 @@ module fft_butterfly (
             end
         endcase
 
-        write_a_prime = {
-            scale_and_saturate(a_real + twiddle_real, shift_ctrl),
-            scale_and_saturate(a_imag + twiddle_imag, shift_ctrl)
-        };
-        write_b_prime = {
-            scale_and_saturate(a_real - twiddle_real, shift_ctrl),
-            scale_and_saturate(a_imag - twiddle_imag, shift_ctrl)
-        };
+        scaled_a_real = scale_with_overflow(a_real + twiddle_real, shift_ctrl);
+        scaled_a_imag = scale_with_overflow(a_imag + twiddle_imag, shift_ctrl);
+        scaled_b_real = scale_with_overflow(a_real - twiddle_real, shift_ctrl);
+        scaled_b_imag = scale_with_overflow(a_imag - twiddle_imag, shift_ctrl);
+        write_a_prime = {scaled_a_real[6:0], scaled_a_imag[6:0]};
+        write_b_prime = {scaled_b_real[6:0], scaled_b_imag[6:0]};
+        overflow = scaled_a_real[7] | scaled_a_imag[7] |
+                   scaled_b_real[7] | scaled_b_imag[7];
     end
 endmodule
 
@@ -157,13 +168,15 @@ module fft_datapath (
     input  wire [13:0] d_load,
     input  wire [1:0]  twiddle_index,
     input  wire [1:0]  shift_ctrl,
-    output wire [13:0] d_out
+    output wire [13:0] d_out,
+    output wire        overflow
 );
 
     wire [13:0] read_a;
     wire [13:0] read_b;
     wire [13:0] write_a_prime;
     wire [13:0] write_b_prime;
+    wire        butterfly_overflow;
 
     reg_file reg_file_inst (
         .clk(clk),
@@ -186,8 +199,11 @@ module fft_datapath (
         .twiddle_index(twiddle_index),
         .shift_ctrl(shift_ctrl),
         .write_a_prime(write_a_prime),
-        .write_b_prime(write_b_prime)
+        .write_b_prime(write_b_prime),
+        .overflow(butterfly_overflow)
     );
+
+    assign overflow = butterfly_overflow;
 
 endmodule
 
@@ -197,31 +213,31 @@ endmodule
 module fft_io_wrapper (
     input  wire        clk,
     input  wire        rst_n,
-    input  wire [7:0]  ui_in,
+    input  wire [6:0]  ui_in,
     input  wire [1:0]  Phase_State,
     input  wire [13:0] D_out,
+    input  wire        overflow_flag,
     output wire [13:0] D_load,
     output reg  [7:0]  uo_out,
     output wire [7:0]  uio_out,
     output wire [7:0]  uio_oe
 );
     localparam [1:0] PHASE_LOAD    = 2'd0;
-    localparam [1:0] PHASE_COMPUTE = 2'd1;
     localparam [1:0] PHASE_UNLOAD  = 2'd2;
 
     reg [3:0] stream_cycle;
     wire is_valid_input;
     wire is_valid_output;
 
-    assign D_load = {ui_in[6:0], 7'd0};
+    assign D_load = {ui_in, 7'd0};
     assign is_valid_input = (Phase_State == PHASE_LOAD);
     assign is_valid_output = (Phase_State == PHASE_UNLOAD);
 
     // Expose phase-valid indicators on uio[0] and uio[1].
-    assign uio_out = {6'b0, is_valid_output, is_valid_input};
-    assign uio_oe = 8'b00000011;
+    assign uio_out = {5'b0, overflow_flag & is_valid_output, is_valid_output, is_valid_input};
+    assign uio_oe = 8'b00000111;
 
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n)
             stream_cycle <= 4'd0;
         else if (Phase_State != PHASE_UNLOAD)
@@ -374,6 +390,7 @@ endmodule
 //   ui_in[6:0]  signed 7-bit real sample; ui_in[7] is ignored
 //   uio_out[0]  high throughout LOAD: ui_in is sampled at every rising edge
 //   uio_out[1]  high throughout OUTPUT: uo_out = {0, real} then {1, imag}
+//   uio_out[2]  overflow during OUTPUT if any butterfly saturated in this frame
 //   uo_out      16 bytes, X[0]..X[7] in natural order; 0 outside OUTPUT
 //   uio_in      ignored
 // Frames repeat every 36 cycles: 8 load, 12 compute, and 16 output.
@@ -399,6 +416,17 @@ module tt_um_daniel6872_fft (
     wire        output_imag;
     wire [13:0] d_load;
     wire [13:0] d_out;
+    wire        butterfly_overflow;
+    reg         overflow_latched;
+
+    always @(posedge clk) begin
+        if (!rst_n)
+            overflow_latched <= 1'b0;
+        else if (we_load)
+            overflow_latched <= 1'b0;
+        else if (we_math && butterfly_overflow)
+            overflow_latched <= 1'b1;
+    end
 
     fft_controller controller_inst (
         .clk(clk),
@@ -427,15 +455,17 @@ module tt_um_daniel6872_fft (
         .d_load(d_load),
         .twiddle_index(twiddle_index),
         .shift_ctrl(shift_ctrl),
-        .d_out(d_out)
+        .d_out(d_out),
+        .overflow(butterfly_overflow)
     );
 
     fft_io_wrapper io_wrapper_inst (
         .clk(clk),
         .rst_n(rst_n),
-        .ui_in(ui_in),
+        .ui_in(ui_in[6:0]),
         .Phase_State(phase_state),
         .D_out(d_out),
+        .overflow_flag(overflow_latched),
         .D_load(d_load),
         .uo_out(uo_out),
         .uio_out(uio_out),
@@ -443,7 +473,7 @@ module tt_um_daniel6872_fft (
     );
 
     // fft_io_wrapper derives its own valid and real/imaginary selects.
-    wire _unused = &{ena, uio_in, is_valid_output, output_imag, 1'b0};
+    wire _unused = &{ena, ui_in[7], uio_in, is_valid_output, output_imag, 1'b0};
 
 endmodule
 `default_nettype wire

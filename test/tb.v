@@ -44,6 +44,7 @@ module tb ();
   reg [1:0] unit_bf_shift;
   wire [13:0] unit_bf_write_a;
   wire [13:0] unit_bf_write_b;
+  wire unit_bf_overflow;
 
   reg unit_dp_rst_n;
   reg unit_dp_we_load;
@@ -54,11 +55,13 @@ module tb ();
   reg [1:0] unit_dp_twiddle;
   reg [1:0] unit_dp_shift;
   wire [13:0] unit_dp_d_out;
+  wire unit_dp_overflow;
 
   reg unit_io_rst_n;
   reg [7:0] unit_io_ui_in;
   reg [1:0] unit_io_phase;
   reg [13:0] unit_io_d_out;
+  reg unit_io_overflow;
   wire [13:0] unit_io_d_load;
   wire [7:0] unit_io_uo_out;
   wire [7:0] unit_io_uio_out;
@@ -117,7 +120,8 @@ module tb ();
       .twiddle_index(unit_bf_twiddle),
       .shift_ctrl(unit_bf_shift),
       .write_a_prime(unit_bf_write_a),
-      .write_b_prime(unit_bf_write_b)
+      .write_b_prime(unit_bf_write_b),
+      .overflow(unit_bf_overflow)
   );
 
   fft_datapath unit_fft_datapath (
@@ -130,15 +134,17 @@ module tb ();
       .d_load(unit_dp_d_load),
       .twiddle_index(unit_dp_twiddle),
       .shift_ctrl(unit_dp_shift),
-      .d_out(unit_dp_d_out)
+      .d_out(unit_dp_d_out),
+      .overflow(unit_dp_overflow)
   );
 
   fft_io_wrapper unit_fft_io_wrapper (
       .clk(clk),
       .rst_n(unit_io_rst_n),
-      .ui_in(unit_io_ui_in),
+      .ui_in(unit_io_ui_in[6:0]),
       .Phase_State(unit_io_phase),
       .D_out(unit_io_d_out),
+      .overflow_flag(unit_io_overflow),
       .D_load(unit_io_d_load),
       .uo_out(unit_io_uo_out),
       .uio_out(unit_io_uio_out),

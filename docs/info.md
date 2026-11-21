@@ -32,7 +32,7 @@ A vector version of this diagram is in [FFT_architecture.pdf](FFT_architecture.p
 - `WE_load` writes `D_load` to `Addr_A`.
 - `WE_math` writes `Write_A'` to `Addr_A` and `Write_B'` to `Addr_B`.
 
-**Butterfly unit (`fft_butterfly`)**: A purely combinational block. It computes `W*B` for the selected twiddle, then `Write_A' = A + W*B` and `Write_B' = A - W*B`, each scaled and saturated to 7 bits per component. The twiddles are selected by `Twiddle_Index`:
+**Butterfly unit (`fft_butterfly`)**: A purely combinational block. It computes `W*B` for the selected twiddle, then `Write_A' = A + W*B` and `Write_B' = A - W*B`, each scaled and saturated to 7 bits per component. It also raises an `overflow` output when any of those four components had to be saturated. The twiddles are selected by `Twiddle_Index`:
 
 | Index | Twiddle | Implementation |
 |---|---|---|
@@ -43,10 +43,13 @@ A vector version of this diagram is in [FFT_architecture.pdf](FFT_architecture.p
 
 **I/O wrapper (`fft_io_wrapper`)**: Drives the pins from `Phase_State`.
 - `uio[0]` (`is_valid_input`) is high throughout the load phase and `uio[1]` (`is_valid_output`) is high throughout the output phase.
-- It forms `D_load` from `ui_in`.
+- `uio[2]` (`overflow`) is the sticky overflow flag, gated so it only shows during the output phase.
+- It forms `D_load` from `ui_in[6:0]`.
 - During output it uses its own counter to send the real byte `{0, real[6:0]}` on even cycles and the imaginary byte `{1, imag[6:0]}` on odd cycles. `uo_out` is 0 outside the output phase.
 
 The top module `tt_um_daniel6872_fft` ties these blocks together. The FSM takes its `is_valid_input` from `uio_out[0]`, so it loads a sample on every load cycle.
+
+The top module also holds a **sticky overflow latch** (`overflow_latched`). It is cleared by reset and by every `WE_load`, and set when a `WE_math` write coincides with the butterfly's `overflow`. The latch drives the wrapper's `overflow_flag` input, so it covers every butterfly of the current frame.
 
 ### Operating sequence (36 cycles per frame)
 
@@ -54,7 +57,7 @@ The top module `tt_um_daniel6872_fft` ties these blocks together. The FSM takes 
 |---|---|---|---|---|
 | 1-8 | Load | 1 | 0 | One sample per clock is written to the register file in bit-reversed order: x[0..7] go to addresses 0, 4, 2, 6, 1, 5, 3, 7 |
 | 9-20 | Compute | 0 | 0 | One butterfly per clock, 3 stages x 4 butterflies. Each result is written back in the same clock edge. |
-| 21-36 | Output | 0 | 1 | 16 bytes: X[0] real, X[0] imag, X[1] real, ... X[7] imag |
+| 21-36 | Output | 0 | 1 | (`uio[2]` = overflow) 16 bytes: X[0] real, X[0] imag, X[1] real, ... X[7] imag |
 
 After cycle 36 the FSM returns to the load phase. The next frame starts on the very next clock edge, with no idle gap.
 
@@ -80,7 +83,8 @@ Bin X[k] ends up at register address k, so the output phase reads the addresses 
 | `uo_out[7]` | out | `result_imag_flag` | 0 = real byte, 1 = imaginary byte |
 | `uio[0]` | out | `load_valid` (`is_valid_input`) | High while the chip is accepting samples |
 | `uio[1]` | out | `output_valid` (`is_valid_output`) | High while `uo_out` carries result bytes |
-| `uio[7:2]` | in | unused | Not driven by the design (`uio_oe` = `0x03`) |
+| `uio[2]` | out | `overflow` | High only during the 16 output cycles, and only if any butterfly saturated in this frame |
+| `uio[7:3]` | in | unused | Not driven by the design (`uio_oe` = `0x07`) |
 
 ### Team split and timeline
 
@@ -112,6 +116,7 @@ From `test/`, run `make -B` for the RTL simulation (add `GATES=yes` for the gate
 2. On each of the next 8 rising clock edges, set `ui_in[6:0]` to the next sample, x[0] first. There is no handshake, so a sample must be present on every one of those edges.
 3. `uio[0]` falls. Wait 12 clocks while both flags are low and `uo_out` is 0.
 4. `uio[1]` goes high. Read `uo_out` on each of the next 16 clocks. Bytes alternate real (`uo_out[7]` = 0) and imaginary (`uo_out[7]` = 1), starting with X[0]. Sign-extend `uo_out[6:0]` from bit 6.
+   `uio[2]` (`overflow`) is high during these 16 clocks only if some butterfly result saturated in this frame, which means the outputs may be clipped.
 5. `uio[0]` goes high again immediately and the next frame begins.
 
 Worked examples (inputs in decimal, bytes in hex):
