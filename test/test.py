@@ -695,6 +695,10 @@ async def test_io_wrapper_module(dut):
     assert int(io.uo_out.value) == (0x80 | (46 & 0x7F)), "counter must hold at byte 15"
 
     io.rst_n.value = 0
+    await Timer(1, unit="ns")
+    assert int(io.uo_out.value) == (0x80 | (46 & 0x7F)), (
+        "synchronous reset must wait for the next rising edge"
+    )
     await unit_edge(dut)
     await Timer(1, unit="ns")
     assert int(io.uo_out.value) == ((-37) & 0x7F), "synchronous reset restarts at real"
