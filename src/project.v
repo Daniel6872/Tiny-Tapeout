@@ -62,7 +62,9 @@ module fft_butterfly (
         reg signed [13:0] times_45;
         reg signed [15:0] extended_value;
         reg signed [15:0] product;
+        /* verilator lint_off UNUSEDSIGNAL */
         reg signed [15:0] rounded_product;
+        /* verilator lint_on UNUSEDSIGNAL */
         begin
             extended_value = {{8{value[7]}}, value};
             // 181*x = 4*(16*(3*x) - 3*x) + x: three add/subtract operations.
@@ -211,7 +213,7 @@ endmodule
 module fft_io_wrapper (
     input  wire        clk,
     input  wire        rst_n,
-    input  wire [7:0]  ui_in,
+    input  wire [6:0]  ui_in,
     input  wire [1:0]  Phase_State,
     input  wire [13:0] D_out,
     input  wire        overflow_flag,
@@ -221,14 +223,13 @@ module fft_io_wrapper (
     output wire [7:0]  uio_oe
 );
     localparam [1:0] PHASE_LOAD    = 2'd0;
-    localparam [1:0] PHASE_COMPUTE = 2'd1;
     localparam [1:0] PHASE_UNLOAD  = 2'd2;
 
     reg [3:0] stream_cycle;
     wire is_valid_input;
     wire is_valid_output;
 
-    assign D_load = {ui_in[6:0], 7'd0};
+    assign D_load = {ui_in, 7'd0};
     assign is_valid_input = (Phase_State == PHASE_LOAD);
     assign is_valid_output = (Phase_State == PHASE_UNLOAD);
 
@@ -236,7 +237,7 @@ module fft_io_wrapper (
     assign uio_out = {5'b0, overflow_flag & is_valid_output, is_valid_output, is_valid_input};
     assign uio_oe = 8'b00000111;
 
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n)
             stream_cycle <= 4'd0;
         else if (Phase_State != PHASE_UNLOAD)
@@ -461,7 +462,7 @@ module tt_um_daniel6872_fft (
     fft_io_wrapper io_wrapper_inst (
         .clk(clk),
         .rst_n(rst_n),
-        .ui_in(ui_in),
+        .ui_in(ui_in[6:0]),
         .Phase_State(phase_state),
         .D_out(d_out),
         .overflow_flag(overflow_latched),
@@ -472,7 +473,7 @@ module tt_um_daniel6872_fft (
     );
 
     // fft_io_wrapper derives its own valid and real/imaginary selects.
-    wire _unused = &{ena, uio_in, is_valid_output, output_imag, 1'b0};
+    wire _unused = &{ena, ui_in[7], uio_in, is_valid_output, output_imag, 1'b0};
 
 endmodule
 `default_nettype wire
