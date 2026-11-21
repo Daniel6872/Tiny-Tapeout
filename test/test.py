@@ -5,7 +5,8 @@ Pin protocol (fft_io_wrapper):
     rising edge in LOAD; ui_in[7] and all uio_in pins are ignored.
   * After 8 samples there are 12 compute cycles, then 16 OUTPUT cycles with
     uio_out[1] high. uo_out is {0, real[6:0]} then {1, imag[6:0]} for X[0]..X[7],
-    and 0 at all other times. uio_oe is 0x03.
+    and 0 at all other times. uio_out[2] is a sticky per-frame overflow flag.
+    uio_oe is 0x07.
   * Frames repeat every 36 cycles.
 
 Pins are checked after every rising edge against a cycle-accurate model. On RTL,
@@ -31,6 +32,7 @@ OUTPUT_BYTES = 16
 FRAME_EDGES = LOAD_CYCLES + COMPUTE_CYCLES + OUTPUT_BYTES
 UIO_LOAD = 0b01
 UIO_OUTPUT = 0b10
+UIO_OVERFLOW = 0b100
 
 
 def _dit_schedule():
@@ -55,10 +57,21 @@ def _sqrt_half(value):
 
 def scale_and_saturate(value, shift):
     # Round to nearest with ties toward +infinity, then saturate to signed 7-bit.
-    return max(-64, min(63, (value + (1 << (shift - 1) if shift else 0)) >> shift))
+    rounded = (value + (1 << (shift - 1) if shift else 0)) >> shift
+    return max(-64, min(63, rounded))
+
+
+def scale_and_saturate_with_overflow(value, shift):
+    rounded = (value + (1 << (shift - 1) if shift else 0)) >> shift
+    return max(-64, min(63, rounded)), not -64 <= rounded <= 63
 
 
 def butterfly(a, b, twiddle, shift=1):
+    result_a, result_b, _ = butterfly_with_overflow(a, b, twiddle, shift)
+    return result_a, result_b
+
+
+def butterfly_with_overflow(a, b, twiddle, shift=1):
     """Apply one rounded, saturated butterfly for W = exp(-j*2*pi*twiddle/8)."""
     ar, ai = a
     br, bi = b
@@ -72,9 +85,12 @@ def butterfly(a, b, twiddle, shift=1):
         tr, ti = _sqrt_half(bi - br), _sqrt_half(-br - bi)
     else:
         raise ValueError("twiddle must be 0..3")
-    return (
-        (scale_and_saturate(ar + tr, shift), scale_and_saturate(ai + ti, shift)),
-        (scale_and_saturate(ar - tr, shift), scale_and_saturate(ai - ti, shift)),
+    a_real, overflow_ar = scale_and_saturate_with_overflow(ar + tr, shift)
+    a_imag, overflow_ai = scale_and_saturate_with_overflow(ai + ti, shift)
+    b_real, overflow_br = scale_and_saturate_with_overflow(ar - tr, shift)
+    b_imag, overflow_bi = scale_and_saturate_with_overflow(ai - ti, shift)
+    return (a_real, a_imag), (b_real, b_imag), (
+        overflow_ar or overflow_ai or overflow_br or overflow_bi
     )
 
 
@@ -92,8 +108,12 @@ def fft_reference(samples):
 
 def expected_bytes(samples):
     """X[0]..X[7] as {0, real[6:0]} then {1, imag[6:0]}."""
+    return encode_bins(fft_reference(samples))
+
+
+def encode_bins(bins):
     out = []
-    for real, imag in fft_reference(samples):
+    for real, imag in bins:
         out += [real & 0x7F, 0x80 | (imag & 0x7F)]
     return out
 
@@ -114,14 +134,17 @@ class FrameModel:
         self.samples = []
         self.count = 0
         self.bytes = []
+        self.data = [(0, 0)] * 8
+        self.overflow = False
 
     def pins(self):
         """(uo_out, uio_out) for the current state; uo_out is combinational."""
+        overflow_pin = UIO_OVERFLOW if self.phase == "OUTPUT" and self.overflow else 0
         if self.phase == "LOAD":
-            return 0, UIO_LOAD
+            return 0, UIO_LOAD | overflow_pin
         if self.phase == "COMPUTE":
-            return 0, 0
-        return self.bytes[self.count], UIO_OUTPUT
+            return 0, overflow_pin
+        return self.bytes[self.count], UIO_OUTPUT | overflow_pin
 
     def controls(self):
         """FSM outputs the datapath uses at the next rising edge.
@@ -143,20 +166,34 @@ class FrameModel:
         if not rst_n:
             self.reset()
         elif self.phase == "LOAD":
+            if not self.samples:
+                self.overflow = False
+            self.data[LOAD_ORDER[len(self.samples)]] = (sample, 0)
             self.samples.append(sample)
             if len(self.samples) == LOAD_CYCLES:
-                self.bytes = expected_bytes(self.samples)
                 self.phase = "COMPUTE"
                 self.count = 0
         elif self.phase == "COMPUTE":
+            addr_a, addr_b, twiddle = COMPUTE_SCHEDULE[self.count]
+            result_a, result_b, overflow = butterfly_with_overflow(
+                self.data[addr_a], self.data[addr_b], twiddle
+            )
+            self.data[addr_a] = result_a
+            self.data[addr_b] = result_b
+            self.overflow = self.overflow or overflow
             self.count += 1
             if self.count == COMPUTE_CYCLES:
+                self.bytes = encode_bins(self.data)
                 self.phase = "OUTPUT"
                 self.count = 0
         else:
             self.count += 1
             if self.count == OUTPUT_BYTES:
-                self.reset()
+                self.phase = "LOAD"
+                self.samples = []
+                self.count = 0
+                self.bytes = []
+                self.data = [(0, 0)] * 8
         return self.pins()
 
 
@@ -177,8 +214,8 @@ class Harness:
     def read_pins(self):
         uo_out = int(self.dut.uo_out.value)
         uio_out = int(self.dut.uio_out.value)
-        assert int(self.dut.uio_oe.value) == 0b0000_0011, "uio_oe must be 0x03"
-        assert uio_out & 0xFC == 0, f"uio_out[7:2] must be 0: {uio_out:#04x}"
+        assert int(self.dut.uio_oe.value) == 0b0000_0111, "uio_oe must be 0x07"
+        assert uio_out & 0xF8 == 0, f"uio_out[7:3] must be 0: {uio_out:#04x}"
         return uo_out, uio_out
 
     async def tick(self, sample=None, rst_n=True, randomize_ignored_pins=True):
@@ -325,6 +362,44 @@ async def test_manual_single_frame(dut):
 
 
 @cocotb.test()
+async def test_manual_overflow_single_frame(dut):
+    """Run a saturating frame and check overflow is high only during output."""
+    harness = Harness(dut, 0x0F10)
+    await harness.start()
+    await harness.reset()
+
+    samples = [63, -64] * 4
+    expected_bins = [
+        (0, 0), (0, 0), (0, 0), (0, 0),
+        (63, 0), (0, 0), (0, 0), (0, 0),
+    ]
+    assert fft_reference(samples) == expected_bins
+    expected = expected_bytes(samples)
+    dut._log.info("Input samples: %s", samples)
+    dut._log.info("Expected (real, imag) bins: %s", expected_bins)
+
+    for sample in samples:
+        _, uio = await harness.tick(sample, randomize_ignored_pins=False)
+        assert not (uio & UIO_OVERFLOW), "overflow must be low during LOAD"
+
+    overflow_trace = []
+    received = []
+    for _ in range(COMPUTE_CYCLES + OUTPUT_BYTES):
+        byte, uio = await harness.tick(randomize_ignored_pins=False)
+        overflow_trace.append(bool(uio & UIO_OVERFLOW))
+        if uio & UIO_OUTPUT:
+            received.append(byte)
+        else:
+            assert byte == 0, "uo_out must be zero outside OUTPUT"
+
+    assert received == expected
+    assert harness.model.overflow, "test frame must cause at least one saturation"
+    assert overflow_trace == (
+        [False] * (COMPUTE_CYCLES - 1) + [True] * OUTPUT_BYTES + [False]
+    ), "uio[2] must be high only throughout the 16 OUTPUT cycles"
+
+
+@cocotb.test()
 async def test_hand_checked_frames(dut):
     """Known inputs with hand-calculated outputs, sent as back-to-back frames."""
     harness = Harness(dut, 1)
@@ -378,7 +453,7 @@ async def test_continuous_streaming_timing(dut):
     for frame in range(frames):
         base = frame * FRAME_EDGES
         window = pins[base:base + FRAME_EDGES]
-        assert [uio for _, uio in window] == pattern, f"frame {frame} uio_out timing"
+        assert [uio & 0b11 for _, uio in window] == pattern, f"frame {frame} uio_out timing"
         accepted = presented[base:base + LOAD_CYCLES]
         start = LOAD_CYCLES - 1 + COMPUTE_CYCLES
         assert [b for b, _ in window[start:start + OUTPUT_BYTES]] == expected_bytes(accepted)
@@ -409,7 +484,8 @@ async def unit_defaults(dut):
     for name in (
         "unit_rf_rst_n", "unit_rf_we_load", "unit_rf_we_math",
         "unit_dp_rst_n", "unit_dp_we_load", "unit_dp_we_math",
-        "unit_io_rst_n", "unit_ctrl_rst_n", "unit_ctrl_is_valid_input",
+        "unit_io_rst_n", "unit_io_overflow",
+        "unit_ctrl_rst_n", "unit_ctrl_is_valid_input",
     ):
         getattr(dut, name).value = 0
     for name in (
@@ -525,11 +601,15 @@ async def test_butterfly_module(dut):
                 bf.shift_ctrl.value = shift
                 await Timer(1, unit="ns")
                 expected_a, expected_b = butterfly(a, b, twiddle, shift)
+                _, _, expected_overflow = butterfly_with_overflow(a, b, twiddle, shift)
                 assert int(bf.write_a_prime.value) == complex_word(*expected_a), (
                     f"A' mismatch for A={a}, B={b}, twiddle={twiddle}, shift={shift}"
                 )
                 assert int(bf.write_b_prime.value) == complex_word(*expected_b), (
                     f"B' mismatch for A={a}, B={b}, twiddle={twiddle}, shift={shift}"
+                )
+                assert int(bf.overflow.value) == expected_overflow, (
+                    f"overflow mismatch for A={a}, B={b}, twiddle={twiddle}, shift={shift}"
                 )
 
 
@@ -561,10 +641,12 @@ async def test_datapath_module(dut):
     dp.shift_ctrl.value = 1
     await Timer(1, unit="ns")
     expected_a, expected_b = butterfly(a, b, 3)
+    _, _, expected_overflow = butterfly_with_overflow(a, b, 3)
     dp.we_math.value = 1
     await unit_edge(dut)
     dp.we_math.value = 0
     assert int(dp.d_out.value) == complex_word(*expected_a)
+    assert int(dp.overflow.value) == expected_overflow
     dp.addr_a.value = 1
     await Timer(1, unit="ns")
     assert int(dp.d_out.value) == complex_word(*expected_b)
@@ -579,19 +661,23 @@ async def test_io_wrapper_module(dut):
     io = dut.unit_fft_io_wrapper
     io.rst_n.value = 0
     io.Phase_State.value = 2
+    io.overflow_flag.value = 0
     io.ui_in.value = 0xD5
     io.D_out.value = complex_word(-37, 46)
     await Timer(1, unit="ns")
     assert int(io.uio_out.value) == 0b10
-    assert int(io.uio_oe.value) == 0x03
+    assert int(io.uio_oe.value) == 0x07
     assert int(io.uo_out.value) == 0x5B, "reset stream counter selects real output"
     assert int(io.D_load.value) == ((0xD5 & 0x7F) << 7)
+    io.overflow_flag.value = 1
+    await Timer(1, unit="ns")
+    assert int(io.uio_out.value) == 0b110, "overflow flag must be exposed on uio[2]"
     await unit_edge(dut)
     io.rst_n.value = 1
 
     io.Phase_State.value = 0
     await Timer(1, unit="ns")
-    assert int(io.uio_out.value) == 0b01
+    assert int(io.uio_out.value) == 0b001
     assert int(io.uo_out.value) == 0
     io.Phase_State.value = 1
     await Timer(1, unit="ns")
@@ -603,7 +689,7 @@ async def test_io_wrapper_module(dut):
         await Timer(1, unit="ns")
         expected = (0x80 | (46 & 0x7F)) if index & 1 else (-37 & 0x7F)
         assert int(io.uo_out.value) == expected, f"output byte {index}"
-        assert int(io.uio_out.value) == 0b10
+        assert int(io.uio_out.value) == 0b110
         await unit_edge(dut)
     assert int(io.uo_out.value) == (0x80 | (46 & 0x7F)), "counter must hold at byte 15"
 
