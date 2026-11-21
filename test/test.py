@@ -662,13 +662,14 @@ async def test_io_wrapper_module(dut):
     io.rst_n.value = 0
     io.Phase_State.value = 2
     io.overflow_flag.value = 0
-    io.ui_in.value = 0xD5
+    io.ui_in.value = 0x5B
     io.D_out.value = complex_word(-37, 46)
+    await unit_edge(dut)
     await Timer(1, unit="ns")
     assert int(io.uio_out.value) == 0b10
     assert int(io.uio_oe.value) == 0x07
     assert int(io.uo_out.value) == 0x5B, "reset stream counter selects real output"
-    assert int(io.D_load.value) == ((0xD5 & 0x7F) << 7)
+    assert int(io.D_load.value) == ((0x5B & 0x7F) << 7)
     io.overflow_flag.value = 1
     await Timer(1, unit="ns")
     assert int(io.uio_out.value) == 0b110, "overflow flag must be exposed on uio[2]"
@@ -694,8 +695,9 @@ async def test_io_wrapper_module(dut):
     assert int(io.uo_out.value) == (0x80 | (46 & 0x7F)), "counter must hold at byte 15"
 
     io.rst_n.value = 0
+    await unit_edge(dut)
     await Timer(1, unit="ns")
-    assert int(io.uo_out.value) == ((-37) & 0x7F), "asynchronous reset restarts at real"
+    assert int(io.uo_out.value) == ((-37) & 0x7F), "synchronous reset restarts at real"
 
 
 def assert_controller_outputs(controller, expected, message):

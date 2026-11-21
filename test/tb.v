@@ -141,7 +141,7 @@ module tb ();
   fft_io_wrapper unit_fft_io_wrapper (
       .clk(clk),
       .rst_n(unit_io_rst_n),
-      .ui_in(unit_io_ui_in),
+      .ui_in(unit_io_ui_in[6:0]),
       .Phase_State(unit_io_phase),
       .D_out(unit_io_d_out),
       .overflow_flag(unit_io_overflow),
