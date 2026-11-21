@@ -16,7 +16,7 @@ A fully unrolled FFT needs 12 butterflies (3 stages x 4). To fit one Tiny Tapeou
 | Internal word | 14 bits = 7-bit real + 7-bit imaginary (each: 1 sign bit + 6 data bits, two's complement) |
 | Loaded word | `{sample[6:0], 7'd0}`, so the imaginary part starts at 0 |
 | Output | 8 complex bins, each sent as 2 bytes (real, then imaginary) |
-| Scaling | Each stage divides by 2 (round to nearest, saturate), so outputs are about **X[k] / 8** and cannot overflow |
+| Scaling | Each stage divides by 2 (round to nearest, saturate), so outputs are about **X[k] / 8**. Results that still exceed 7 bits saturate and set the `overflow` flag |
 
 ### Block diagram
 
