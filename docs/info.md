@@ -16,7 +16,8 @@ A fully unrolled FFT needs 12 butterflies (3 stages x 4). To fit one Tiny Tapeou
 | Internal word | 14 bits = 7-bit real + 7-bit imaginary (each: 1 sign bit + 6 data bits, two's complement) |
 | Loaded word | `{sample[6:0], 7'd0}`, so the imaginary part starts at 0 |
 | Output | 8 complex bins, each sent as 2 bytes (real, then imaginary) |
-| Scaling | Each stage divides by 2 (round to nearest), so outputs are about **X[k] / 8**. After rounding and scaling, any component outside the signed 7-bit range [-64, 63] is clamped to that range, and the `overflow` flag is set |
+| Scaling | Each stage divides by 2, so outputs are about **X[k] / 8**. After rounding and scaling, any component outside the signed 7-bit range [-64, 63] is clamped to that range, and the `overflow` flag is set |
+| Rounding | Every rounding step (the W1/W3 products and the per-stage divide by 2) rounds to nearest with **ties toward positive infinity** (add half, then arithmetic shift right) |
 
 ### Block diagram
 
@@ -32,7 +33,7 @@ A vector version of this diagram is in [FFT_architecture.pdf](FFT_architecture.p
 - `WE_load` writes `D_load` to `Addr_A`.
 - `WE_math` writes `Write_A'` to `Addr_A` and `Write_B'` to `Addr_B`.
 
-**Butterfly unit (`fft_butterfly`)**: A purely combinational block. It computes `W*B` for the selected twiddle, then `Write_A' = A + W*B` and `Write_B' = A - W*B`, each scaled and saturated to 7 bits per component. It also raises an `overflow` output when any of those four components, after rounding and scaling, was outside [-64, 63] and had to be clamped. The twiddles are selected by `Twiddle_Index`:
+**Butterfly unit (`fft_butterfly`)**: A purely combinational block. It computes `W*B` for the selected twiddle, then `Write_A' = A + W*B` and `Write_B' = A - W*B`, each scaled and saturated to 7 bits per component. For W1 and W3, the 181/256 products are rounded (ties toward +infinity) **before** the butterfly add/subtract, and only then is the sum or difference divided by 2 (also rounded). It also raises an `overflow` output when any of those four components, after rounding and scaling, was outside [-64, 63] and had to be clamped. The twiddles are selected by `Twiddle_Index`:
 
 | Index | Twiddle | Implementation |
 |---|---|---|
@@ -76,8 +77,8 @@ Bin X[k] ends up at register address k, so the output phase reads the addresses 
 | Pin | Dir | Name | Description |
 |---|---|---|---|
 | `clk` | in | clk | Clock |
-| `rst_n` | in | rst_n | Active-low reset, sampled on rising clock edges. It synchronously clears the register file and the FSM state (back to the start of the load phase), so hold it low for at least one clock edge. |
-| `ui_in[6:0]` | in | `sample_in[6:0]` | Signed 7-bit real input sample |
+| `rst_n` | in | rst_n | Active-low reset, sampled on rising clock edges. It synchronously clears the register file and the FSM state (back to the start of the load phase), so hold it low for at least one clock edge. The FSM is in the load phase during reset, so it accepts a sample on the first rising edge after `rst_n` is released. |
+| `ui_in[6:0]` | in | `sample_in[6:0]` | Signed 7-bit real input sample. Present it and hold it stable before the rising edge that samples it. |
 | `ui_in[7]` | in | unused | Ignored |
 | `uo_out[6:0]` | out | `result_out[6:0]` | Signed 7-bit real or imaginary value of the current output byte |
 | `uo_out[7]` | out | `result_imag_flag` | 0 = real byte, 1 = imaginary byte |
@@ -90,7 +91,7 @@ Bin X[k] ends up at register address k, so the output phase reads the addresses 
 
 ### Simulation
 
-From `test/`, run `make -B` for the RTL simulation (add `GATES=yes` for the gate-level netlist after hardening). The cocotb tests in `test/test.py` do the following:
+From `test/`, run `make -B` for the RTL simulation. The cocotb tests in `test/test.py` do the following:
 - Compare the `uo_out` and `uio_out` pins after every clock edge against a cycle-accurate Python model of the FFT.
 - Check the FSM control signals against the expected butterfly schedule (RTL only).
 - Check the fixed-point model against an ideal DFT/8, within 2 LSB.
@@ -99,12 +100,19 @@ From `test/`, run `make -B` for the RTL simulation (add `GATES=yes` for the gate
 - Apply reset at every position in a frame and check that the next frame is correct.
 - Test the register file, butterfly, datapath, I/O wrapper and FSM controller individually (RTL only).
 
+### Gate-level simulation
+
+`make -B GATES=yes` simulates the hardened netlist instead of the RTL. It needs:
+- The hardened netlist copied to `test/gate_level_netlist.v` (the GDS workflow does this automatically; for a local run, copy it yourself).
+- `PDK_ROOT` set to your PDK location.
+- The GF180 Verilog library files `primitives.v` and `gf180mcu_fd_sc_mcu7t5v0.v` from `$PDK_ROOT/gf180mcuD/libs.ref/gf180mcu_fd_sc_mcu7t5v0/verilog/`.
+
 ### On the chip
 
-1. Reset the chip: hold `rst_n` low for at least one rising clock edge (a few is fine), then release it. `uio[0]` goes high, which means the chip is accepting samples.
-2. On each of the next 8 rising clock edges, set `ui_in[6:0]` to the next sample, x[0] first. There is no handshake, so a sample must be present on every one of those edges.
+1. Reset the chip: hold `rst_n` low for at least one rising clock edge (a few is fine), then release it. The FSM is already in the load phase, so `uio[0]` is high and the chip accepts samples immediately.
+2. Present x[0] so it is stable before the first rising clock edge after `rst_n` is released. Then, before each of the next 7 rising edges, present and hold the next `ui_in[6:0]` value, in order up to x[7]. There is no handshake, so a sample must be present on every one of those 8 edges.
 3. `uio[0]` falls. Wait 12 clocks while both flags are low and `uo_out` is 0.
-4. `uio[1]` goes high. Read `uo_out` on each of the next 16 clocks. Bytes alternate real (`uo_out[7]` = 0) and imaginary (`uo_out[7]` = 1), starting with X[0]. Sign-extend `uo_out[6:0]` from bit 6.
+4. `uio[1]` goes high. The first byte (X[0] real) is already on `uo_out` at that moment, because it appears right after the final compute edge, at the same time `uio[1]` rises. Do not wait for another rising edge to start capturing: sample on the falling clock edges (or combinationally when `uio[1]` rises), then take all 16 bytes. Bytes alternate real (`uo_out[7]` = 0) and imaginary (`uo_out[7]` = 1), starting with X[0]. Sign-extend `uo_out[6:0]` from bit 6.
    `uio[2]` (`overflow`) is high during these 16 clocks only if some butterfly result in this frame was clamped to [-64, 63] after rounding and scaling, which means the outputs may be clipped.
 5. `uio[0]` goes high again immediately and the next frame begins.
 
