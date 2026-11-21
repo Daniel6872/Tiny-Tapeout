@@ -62,7 +62,9 @@ module fft_butterfly (
         reg signed [13:0] times_45;
         reg signed [15:0] extended_value;
         reg signed [15:0] product;
+        /* verilator lint_off UNUSEDSIGNAL */
         reg signed [15:0] rounded_product;
+        /* verilator lint_on UNUSEDSIGNAL */
         begin
             extended_value = {{8{value[7]}}, value};
             // 181*x = 4*(16*(3*x) - 3*x) + x: three add/subtract operations.
