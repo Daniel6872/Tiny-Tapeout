@@ -1,6 +1,6 @@
 # Tiny Tapeout project information
 project:
-  title:        "Daniel Tapeout"      # Project title
+  title:        "8-Point Fixed-Point FFT"      # Project title
   author:       "Daniel Wang"      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
   description:  "8-point fixed-point FFT with streaming pin interface"      # One line description of what your project does
@@ -45,7 +45,7 @@ pinout:
   # Bidirectional pins (both driven as outputs)
   uio[0]: "load_valid"
   uio[1]: "output_valid"
-  uio[2]: ""
+  uio[2]: "overflow"
   uio[3]: ""
   uio[4]: ""
   uio[5]: ""
