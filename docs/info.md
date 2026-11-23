@@ -78,7 +78,7 @@ Bin X[k] ends up at register address k, so the output phase reads the addresses 
 |---|---|---|---|
 | `clk` | in | clk | Clock |
 | `rst_n` | in | rst_n | Active-low reset, sampled on rising clock edges. It synchronously clears the register file and the FSM state (back to the start of the load phase), so hold it low for at least one clock edge. The FSM is in the load phase during reset, so it accepts a sample on the first rising edge after `rst_n` is released. |
-| `ui_in[6:0]` | in | `sample_in[6:0]` | Signed 7-bit real input sample. Present it and hold it stable before the rising edge that samples it. |
+| `ui_in[6:0]` | in | `sample_in[6:0]` | Signed 7-bit real input sample. Set it up before the rising edge that samples it and keep it stable through that edge until the required hold time has elapsed. |
 | `ui_in[7]` | in | unused | Ignored |
 | `uo_out[6:0]` | out | `result_out[6:0]` | Signed 7-bit real or imaginary value of the current output byte |
 | `uo_out[7]` | out | `result_imag_flag` | 0 = real byte, 1 = imaginary byte |
@@ -110,9 +110,9 @@ From `test/`, run `make -B` for the RTL simulation. The cocotb tests in `test/te
 ### On the chip
 
 1. Reset the chip: hold `rst_n` low for at least one rising clock edge (a few is fine), then release it. The FSM is already in the load phase, so `uio[0]` is high and the chip accepts samples immediately.
-2. Present x[0] so it is stable before the first rising clock edge after `rst_n` is released. Then, before each of the next 7 rising edges, present and hold the next `ui_in[6:0]` value, in order up to x[7]. There is no handshake, so a sample must be present on every one of those 8 edges.
+2. Present x[0] early enough to meet setup time for the first rising clock edge after `rst_n` is released, and keep it stable through the edge until the required hold time has elapsed. For each of the next 7 rising edges, do the same for the next `ui_in[6:0]` value, in order up to x[7]. There is no handshake, so a sample must be present on every one of those 8 edges.
 3. `uio[0]` falls. Wait 12 clocks while both flags are low and `uo_out` is 0.
-4. `uio[1]` goes high. The first byte (X[0] real) is already on `uo_out` at that moment, because it appears right after the final compute edge, at the same time `uio[1]` rises. Do not wait for another rising edge to start capturing: sample on the falling clock edges (or combinationally when `uio[1]` rises), then take all 16 bytes. Bytes alternate real (`uo_out[7]` = 0) and imaginary (`uo_out[7]` = 1), starting with X[0]. Sign-extend `uo_out[6:0]` from bit 6.
+4. `uio[1]` goes high after the final compute edge, and `uo_out` then presents the first byte (X[0] real). Since `uo_out` and `uio[1]` are combinational outputs with potentially different propagation delays, do not use the `uio[1]` rising transition as the capture edge. Instead, capture `uo_out` after the outputs have settled on each of the 16 falling clock edges while `uio[1]` is high. Bytes alternate real (`uo_out[7]` = 0) and imaginary (`uo_out[7]` = 1), starting with X[0]. Sign-extend `uo_out[6:0]` from bit 6.
    `uio[2]` (`overflow`) is high during these 16 clocks only if some butterfly result in this frame was clamped to [-64, 63] after rounding and scaling, which means the outputs may be clipped.
 5. `uio[0]` goes high again immediately and the next frame begins.
 
